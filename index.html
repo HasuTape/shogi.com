@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>Shōgi Bot - Complete Rules</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <h1>将棋 Shōgi vs Bot</h1>
+  
+  <div id="game-container">
+    <div id="game-info">
+      <div id="turn-info" class="turn-indicator">Your turn</div>
+      <div id="check-info" class="check-indicator" style="display: none;"></div>
+      <div id="nifu-warning" class="nifu-warning" style="display: none;"></div>
+    </div>
+    
+    <div id="controls">
+      <div id="game-mode-container">
+        <label>
+          Opponent:
+          <select id="gameMode">
+            <option value="bot">vs Bot</option>
+            <option value="friend">vs Friend</option>
+          </select>
+        </label>
+      </div>
+      
+      <div id="variant-container">
+        <label>
+          Game Variant:
+          <select id="gameVariant">
+            <option value="standard">Standard Shogi</option>
+            <option value="return">Return Variant</option>
+            <option value="nodrop">No Drop</option>
+            <option value="chess">Chess Mode</option>
+            <option value="duck">Duck Shogi</option>
+            <option value="kamikaze">Kamikaze Mode</option>
+            <option value="toxic">Toxic Mode</option>
+          </select>
+        </label>
+      </div>
+      
+      <div id="bot-level-container">
+        <label>
+          Bot Level:
+          <select id="botLevel">
+            <!-- Options will be populated by JavaScript -->
+          </select>
+        </label>
+      </div>
+      
+      <button id="resignBtn" class="game-button resign">Resign</button>
+      <button id="drawBtn" class="game-button draw">Offer Draw</button>
+      <button id="newGameBtn" class="game-button">New Game</button>
+    </div>
+    
+    <div id="board" aria-label="Shogi board"></div>
+  
+    <div id="captured-container">
+      <div class="captured-section">
+        <h3 id="player-captured-title">Your Captured Pieces</h3>
+        <div id="player-captured" class="captured-pieces" aria-label="Player captured pieces"></div>
+      </div>
+      <div class="captured-section">
+        <h3 id="bot-captured-title">Bot's Captured Pieces</h3>
+        <div id="bot-captured" class="captured-pieces" aria-label="Bot captured pieces"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
