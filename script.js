@@ -447,6 +447,9 @@ function validMove(from, to, owner, b = board) {
   
   const p = b[from.y][from.x];
   if (!p || p.owner !== owner) return false;
+  
+  // For special pieces (TOXIC, BOMB), use their promoted type for movement
+  const pieceType = ((p.type === "TOXIC" || p.type === "BOMB") && p.promotedType) ? p.promotedType : p.type;
   if (b[to.y][to.x] && b[to.y][to.x].owner === owner) return false;
   
   // Duck can't be captured
@@ -458,12 +461,12 @@ function validMove(from, to, owner, b = board) {
   
   // Special chess mode movement
   if (gameVariant === "chess") {
-    if (p.type === "KE") {
+    if (pieceType === "KE") {
       // Chess knight moves in L-shape: 2 squares in one direction, 1 in perpendicular
       return (Math.abs(dx) === 2 && Math.abs(dy) === 1) || (Math.abs(dx) === 1 && Math.abs(dy) === 2);
     }
     
-    if (p.type === "FU") {
+    if (pieceType === "FU") {
       // Chess pawn: moves forward, captures diagonally
       const targetPiece = b[to.y][to.x];
       
@@ -481,7 +484,7 @@ function validMove(from, to, owner, b = board) {
     }
   }
 
-  switch (p.type) {
+  switch (pieceType) {
     case "FU": // Pawn (normal shogi mode)
       return dx === 0 && dy === up;
       
@@ -866,10 +869,9 @@ function onCellClick(e) {
             if (confirm("Promote to bomb?")) moved = promoteToKamikaze(moved);
           }
         } else if (gameVariant === "toxic") {
-          if (mustPromote(moved, selected.y, y)) {
+          // Toxic promotion is forced when possible
+          if (mustPromote(moved, selected.y, y) || canPromote(moved, selected.y, y)) {
             moved = promoteToToxic(moved);
-          } else if (canPromote(moved, selected.y, y)) {
-            if (confirm("Promote to toxic?")) moved = promoteToToxic(moved);
           }
         } else {
           if (mustPromote(moved, selected.y, y)) {
@@ -931,21 +933,20 @@ function onCellClick(e) {
 
 function switchPlayer() {
   currentPlayer = currentPlayer === "player" ? "bot" : "player";
-  
-  // Clear en passant target when switching players (it's only valid for one turn)
-  if (gameVariant === "chess") {
-    // En passant target is cleared at the start of each move, not here
-    // This ensures it's available for the opponent's immediate next move
-  }
 }
 
 function handleCapture(capturedPiece, capturingPlayer) {
+  // Special pieces (BOMB, TOXIC) can't be captured to hand - they're destroyed
+  if (capturedPiece.type === "BOMB" || capturedPiece.type === "TOXIC") {
+    return; // Just destroy the piece, don't add to hand
+  }
+  
   if (gameVariant === "chess" || gameVariant === "nodrop") {
     // Pieces are just removed from the board
     return;
   } else if (gameVariant === "return") {
     // Return variant: captured piece goes to opponent's hand
-    const demotedType = demote(capturedPiece.type);
+    const demotedType = demote(capturedPiece.originalType || capturedPiece.type);
     if (capturingPlayer === "player") {
       botCaptured.push(demotedType);
     } else {
@@ -953,7 +954,7 @@ function handleCapture(capturedPiece, capturingPlayer) {
     }
   } else {
     // Standard shogi: captured piece goes to capturer's hand
-    const demotedType = demote(capturedPiece.type);
+    const demotedType = demote(capturedPiece.originalType || capturedPiece.type);
     if (capturingPlayer === "player") {
       playerCaptured.push(demotedType);
     } else {
@@ -980,28 +981,67 @@ function isValidDuckMove(from, to) {
 }
 
 function promoteToKamikaze(piece) {
+  // If piece can be promoted normally, promote it first, then make it toxic
+  let promotedPiece = piece;
+  
+  // Check if piece has a normal promotion
+  const promotionMap = { 
+    FU: "TO", KY: "NY", KE: "NK", GI: "NG", KA: "UM", HI: "RY" 
+  };
+  
+  if (promotionMap[piece.type]) {
+    // Piece has normal promotion - promote it first
+    promotedPiece = {
+      ...piece,
+      type: promotionMap[piece.type],
+      char: kanji[promotionMap[piece.type]]
+    };
+  }
+  // If no promotion exists (KI, OU, already promoted pieces), keep as is
+  
   return { 
-    ...piece, 
+    ...promotedPiece, 
     type: "BOMB", 
     char: kanji["BOMB"], 
-    turnsLeft: 5, // 3 turns total before explosion
-    originalType: piece.type
+    turnsLeft: 5,
+    originalType: piece.type, // Keep original type for demotion
+    promotedType: promotedPiece.type // Keep promoted type for movement
   };
 }
 
 function promoteToToxic(piece) {
+  // If piece can be promoted normally, promote it first, then make it toxic
+  let promotedPiece = piece;
+  
+  // Check if piece has a normal promotion
+  const promotionMap = { 
+    FU: "TO", KY: "NY", KE: "NK", GI: "NG", KA: "UM", HI: "RY" 
+  };
+  
+  if (promotionMap[piece.type]) {
+    // Piece has normal promotion - promote it first
+    promotedPiece = {
+      ...piece,
+      type: promotionMap[piece.type],
+      char: kanji[promotionMap[piece.type]]
+    };
+  }
+  // If no promotion exists (KI, OU, already promoted pieces), keep as is
+  
   return { 
-    ...piece, 
+    ...promotedPiece, 
     type: "TOXIC", 
     char: kanji["TOXIC"], 
-    turnsLeft: 5, // 3 turns total before death
-    originalType: piece.type
+    turnsLeft: 5,
+    originalType: piece.type, // Keep original type for demotion
+    promotedType: promotedPiece.type // Keep promoted type for movement
   };
 }
 
 function explodeBomb(x, y, chainReaction = false) {
   const destroyedPieces = [];
   const chainBombs = [];
+  let kingDestroyed = false;
   
   // Explode in 3x3 area around the bomb
   for (let dy = -1; dy <= 1; dy++) {
@@ -1012,6 +1052,16 @@ function explodeBomb(x, y, chainReaction = false) {
       if (nx >= 0 && nx < 9 && ny >= 0 && ny < 9) {
         const piece = board[ny][nx];
         if (piece && piece.type !== "DUCK") {
+          // Check if king is destroyed
+          if (piece.type === "OU") {
+            kingDestroyed = true;
+            gameEnded = true;
+            setTimeout(() => {
+              const winner = piece.owner === "player" ? "Bot" : "Player";
+              alert(`${winner} wins! King destroyed by bomb explosion!`);
+            }, 100);
+          }
+          
           // Check if this piece is another bomb (for chain reaction)
           if (piece.type === "BOMB" && (nx !== x || ny !== y)) {
             chainBombs.push({ x: nx, y: ny });
@@ -1024,13 +1074,16 @@ function explodeBomb(x, y, chainReaction = false) {
     }
   }
   
-  // Add destroyed pieces to their owners' hands
+  // Add destroyed pieces to their owners' hands (except special pieces)
   destroyedPieces.forEach(({ piece, owner }) => {
-    const demotedType = demote(piece.originalType || piece.type);
-    if (owner === "player") {
-      playerCaptured.push(demotedType);
-    } else {
-      botCaptured.push(demotedType);
+    // Special pieces (BOMB, TOXIC) can't be captured to hand - they're destroyed
+    if (piece.type !== "BOMB" && piece.type !== "TOXIC") {
+      const demotedType = demote(piece.originalType || piece.type);
+      if (owner === "player") {
+        playerCaptured.push(demotedType);
+      } else {
+        botCaptured.push(demotedType);
+      }
     }
   });
   
