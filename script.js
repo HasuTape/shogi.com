@@ -18,18 +18,31 @@ let currentPlayer = "player";
 let gameHistory = [];
 let moveCount = 0;
 let gameEnded = false;
+let fourPlayerMode = false;
+let player3Captured = [];
+let player4Captured = [];
 let drawOffered = false;
 let gameMode = "bot"; // "bot" or "friend"
-let gameVariant = "standard"; // "standard", "return", "nodrop", "chess", "duck", "kamikaze", "toxic"
+let gameVariant = "standard"; // "standard", "return", "nodrop", "chess", "duck", "kamikaze", "toxic", "random", "4player", "prison"
+let randomSubvariant = "same"; // "same", "set", "random"
 let duckPosition = null; // For duck shogi
 let pendingDuckMove = false; // For duck shogi turn management
 let enPassantTarget = null; // For chess en passant
+let fogOfWar = false; // Fog of war mode
+let visibleSquares = new Set(); // Squares visible to current player
 
 const boardEl = document.getElementById("board");
 const playerCapturedEl = document.getElementById("player-captured");
 const botCapturedEl = document.getElementById("bot-captured");
+const player3CapturedEl = document.getElementById("player3-captured");
+const player4CapturedEl = document.getElementById("player4-captured");
 const playerCapturedTitle = document.getElementById("player-captured-title");
 const botCapturedTitle = document.getElementById("bot-captured-title");
+const player3Area = document.getElementById("player3-area");
+const player4Area = document.getElementById("player4-area");
+const fullscreenBtn = document.getElementById("fullscreenBtn");
+const clearAnnotationsBtn = document.getElementById("clearAnnotationsBtn");
+const switchBoardBtn = document.getElementById("switchBoardBtn");
 const turnInfoEl = document.getElementById("turn-info");
 const checkInfoEl = document.getElementById("check-info");
 const nifuWarningEl = document.getElementById("nifu-warning");
@@ -38,33 +51,57 @@ const drawBtn = document.getElementById("drawBtn");
 const newGameBtn = document.getElementById("newGameBtn");
 const gameModeSelect = document.getElementById("gameMode");
 const gameVariantSelect = document.getElementById("gameVariant");
+const randomSubvariantSelect = document.getElementById("randomSubvariant");
+const randomSubvariantContainer = document.getElementById("random-subvariant-container");
 const botLevelSelect = document.getElementById("botLevel");
 const botLevelContainer = document.getElementById("bot-level-container");
 
+// Prison areas for prison variant
+let playerPrison = [];
+let botPrison = [];
+let player3Prison = [];
+let player4Prison = [];
+let prisonBoard = Array(9).fill(null).map(() => Array(9).fill(null));
+let prisonMode = false; // Whether we're in prison fight mode
+
+// Right-click annotations (like chess.com)
+let arrows = []; // Array of {from: {x, y}, to: {x, y}, color}
+let highlightedSquares = []; // Array of {x, y, color}
+let isDrawingArrow = false;
+let arrowStart = null;
+
 // Initialize bot level options (1-50)
 function initBotLevels() {
-  botLevelSelect.innerHTML = "";
-  for (let i = 1; i <= 50; i++) {
-    const option = document.createElement("option");
-    option.value = i;
-    if (i === 1) {
-      option.textContent = `${i} (Random)`;
-    } else if (i === 50) {
-      option.textContent = `${i} (Master)`;
-    } else if (i <= 10) {
-      option.textContent = `${i} (Beginner)`;
-    } else if (i <= 20) {
-      option.textContent = `${i} (Novice)`;
-    } else if (i <= 30) {
-      option.textContent = `${i} (Intermediate)`;
-    } else if (i <= 40) {
-      option.textContent = `${i} (Advanced)`;
-    } else {
-      option.textContent = `${i} (Expert)`;
+  const selectors = [botLevelSelect, 
+    document.getElementById("player2Level"),
+    document.getElementById("player3Level"), 
+    document.getElementById("player4Level")];
+  
+  selectors.forEach(selector => {
+    if (!selector) return;
+    selector.innerHTML = "";
+    for (let i = 1; i <= 50; i++) {
+      const option = document.createElement("option");
+      option.value = i;
+      if (i === 1) {
+        option.textContent = `${i} (Random)`;
+      } else if (i === 50) {
+        option.textContent = `${i} (Master)`;
+      } else if (i <= 10) {
+        option.textContent = `${i} (Beginner)`;
+      } else if (i <= 20) {
+        option.textContent = `${i} (Novice)`;
+      } else if (i <= 30) {
+        option.textContent = `${i} (Intermediate)`;
+      } else if (i <= 40) {
+        option.textContent = `${i} (Advanced)`;
+      } else {
+        option.textContent = `${i} (Expert)`;
+      }
+      selector.appendChild(option);
     }
-    botLevelSelect.appendChild(option);
-  }
-  botLevelSelect.value = "15"; // Default to intermediate level
+    selector.value = "15"; // Default to intermediate level
+  });
 }
 
 // Game mode change handler
@@ -81,6 +118,27 @@ gameVariantSelect.addEventListener('change', function() {
   resetGame();
 });
 
+// Random subvariant change handler
+randomSubvariantSelect.addEventListener('change', function() {
+  randomSubvariant = this.value;
+  resetGame();
+});
+
+// Fullscreen event handler
+fullscreenBtn.addEventListener('click', function() {
+  toggleFullscreen();
+});
+
+// Clear annotations event handler
+clearAnnotationsBtn.addEventListener('click', function() {
+  clearAnnotations();
+});
+
+// Switch board event handler
+switchBoardBtn.addEventListener('click', function() {
+  switchBoard();
+});
+
 function updateGameModeUI() {
   if (gameMode === "friend") {
     botLevelContainer.style.display = "none";
@@ -94,12 +152,57 @@ function updateGameModeUI() {
 }
 
 function updateVariantUI() {
-  const capturedContainer = document.getElementById("captured-container");
-  
-  if (gameVariant === "nodrop" || gameVariant === "chess") {
-    capturedContainer.style.display = "none";
+  // Show/hide random subvariant selector
+  if (gameVariant === "random") {
+    randomSubvariantContainer.style.display = "block";
   } else {
-    capturedContainer.style.display = "flex";
+    randomSubvariantContainer.style.display = "none";
+  }
+  
+  // Fog of war forces bot mode
+  if (gameVariant === "fog") {
+    gameMode = "bot";
+    gameModeSelect.value = "bot";
+    fogOfWar = true;
+  } else {
+    fogOfWar = false;
+  }
+  
+  // Show/hide 4-player areas and settings
+  const fourPlayerSettings = document.getElementById("fourplayer-settings");
+  if (gameVariant === "4player") {
+    player3Area.style.display = "block";
+    player4Area.style.display = "block";
+    fourPlayerSettings.style.display = "block";
+  } else {
+    player3Area.style.display = "none";
+    player4Area.style.display = "none";
+    fourPlayerSettings.style.display = "none";
+  }
+  
+  // Show/hide prison areas and prison board
+  const prisonAreas = document.querySelectorAll('.prison-area');
+  const prisonBoardContainer = document.getElementById('prison-board-container');
+  
+  if (gameVariant === "prison") {
+    prisonAreas.forEach(area => area.style.display = "block");
+    prisonBoardContainer.style.display = "block";
+    switchBoardBtn.style.display = "inline-block";
+  } else {
+    prisonAreas.forEach(area => area.style.display = "none");
+    prisonBoardContainer.style.display = "none";
+    switchBoardBtn.style.display = "none";
+  }
+  
+  // Always show clear annotations button
+  clearAnnotationsBtn.style.display = "inline-block";
+  
+  // Hide captured pieces for nodrop and chess
+  const capturedSections = document.querySelectorAll('.captured-section');
+  if (gameVariant === "nodrop" || gameVariant === "chess") {
+    capturedSections.forEach(section => section.style.display = "none");
+  } else {
+    capturedSections.forEach(section => section.style.display = "block");
   }
   
   // Update captured pieces titles based on variant
@@ -110,6 +213,14 @@ function updateVariantUI() {
     } else {
       playerCapturedTitle.textContent = "Your Return Pieces";
       botCapturedTitle.textContent = "Bot's Return Pieces";
+    }
+  } else if (gameVariant === "prison") {
+    if (gameMode === "friend") {
+      playerCapturedTitle.textContent = "Player 1's Hand";
+      botCapturedTitle.textContent = "Player 2's Hand";
+    } else {
+      playerCapturedTitle.textContent = "Your Hand";
+      botCapturedTitle.textContent = "Bot's Hand";
     }
   } else {
     updateGameModeUI(); // Reset to normal titles
@@ -127,6 +238,10 @@ function initBoard() {
     initChessBoard();
   } else if (gameVariant === "duck") {
     initDuckShogiBoard();
+  } else if (gameVariant === "random") {
+    initRandomStartBoard();
+  } else if (gameVariant === "4player") {
+    init4PlayerBoard();
   } else {
     initStandardShogiBoard();
   }
@@ -192,7 +307,115 @@ function initDuckShogiBoard() {
   board[4][4] = { type: "DUCK", char: kanji["DUCK"], owner: "duck" };
 }
 
+function initRandomStartBoard() {
+  // Only place kings on the board
+  board[0][4] = { type: "OU", char: kanji["OU"], owner: "bot" };
+  board[8][4] = { type: "OU", char: kanji["OU"], owner: "player" };
+  
+  // Generate random pieces for hands
+  let piecesToAdd = [];
+  
+  if (randomSubvariant === "same") {
+    // 5 same pieces - randomly choose one piece type
+    const pieceTypes = ["FU", "KY", "KE", "GI", "KI", "KA", "HI"];
+    const chosenType = pieceTypes[Math.floor(Math.random() * pieceTypes.length)];
+    piecesToAdd = Array(5).fill(chosenType);
+  } else if (randomSubvariant === "set") {
+    // Predefined set: 2 pawns, 1 rook, 1 bishop, 1 gold
+    piecesToAdd = ["FU", "FU", "HI", "KA", "KI"];
+  } else {
+    // All random - 5 completely random pieces
+    const pieceTypes = ["FU", "KY", "KE", "GI", "KI", "KA", "HI"];
+    for (let i = 0; i < 5; i++) {
+      piecesToAdd.push(pieceTypes[Math.floor(Math.random() * pieceTypes.length)]);
+    }
+  }
+  
+  // Both players get the same pieces
+  playerCaptured = [...piecesToAdd];
+  botCaptured = [...piecesToAdd];
+}
+
+function init4PlayerBoard() {
+  fourPlayerMode = true;
+  
+  // Cross-shaped 4-player board exactly like chess.com
+  // Each player gets their corner with full piece set
+  
+  // Player 1 (bottom) - rows 6-8, cols 3-5
+  const player1Setup = [
+    ["FU", "FU", "FU"],
+    ["KI", "OU", "KI"], 
+    ["KY", "HI", "KA"]
+  ];
+  
+  for (let y = 0; y < 3; y++) {
+    for (let x = 0; x < 3; x++) {
+      const type = player1Setup[y][x];
+      if (type) board[6 + y][3 + x] = { type, char: kanji[type], owner: "player" };
+    }
+  }
+  
+  // Player 2 (top) - rows 0-2, cols 3-5  
+  const player2Setup = [
+    ["KA", "HI", "KY"],
+    ["KI", "OU", "KI"],
+    ["FU", "FU", "FU"]
+  ];
+  
+  for (let y = 0; y < 3; y++) {
+    for (let x = 0; x < 3; x++) {
+      const type = player2Setup[y][x];
+      if (type) board[y][3 + x] = { type, char: kanji[type], owner: "player2" };
+    }
+  }
+  
+  // Player 3 (right) - rows 3-5, cols 6-8
+  const player3Setup = [
+    ["FU", "KI", "KA"],
+    ["FU", "OU", "HI"], 
+    ["FU", "KI", "KY"]
+  ];
+  
+  for (let y = 0; y < 3; y++) {
+    for (let x = 0; x < 3; x++) {
+      const type = player3Setup[y][x];
+      if (type) board[3 + y][6 + x] = { type, char: kanji[type], owner: "player3" };
+    }
+  }
+  
+  // Player 4 (left) - rows 3-5, cols 0-2
+  const player4Setup = [
+    ["KY", "KI", "FU"],
+    ["HI", "OU", "FU"],
+    ["KA", "KI", "FU"]
+  ];
+  
+  for (let y = 0; y < 3; y++) {
+    for (let x = 0; x < 3; x++) {
+      const type = player4Setup[y][x];
+      if (type) board[3 + y][x] = { type, char: kanji[type], owner: "player4" };
+    }
+  }
+  
+  // Initialize captured pieces for all players
+  playerCaptured = [];
+  botCaptured = [];
+  player3Captured = [];
+  player4Captured = [];
+}
+
 function renderBoard() {
+  if (prisonMode) {
+    renderPrisonBoard();
+    return;
+  }
+  
+  // Calculate fog of war visibility
+  if (fogOfWar && currentPlayer === "player") {
+    calculateVisibleSquares("player");
+  }
+  
   boardEl.innerHTML = "";
   const validMoves = selected && !selected.drop && !selected.isDuck ? getValidMovesForPiece(selected) : [];
   
@@ -217,22 +440,44 @@ function renderBoard() {
         cell.classList.add("valid-move");
       }
       
+      // Add square highlights
+      const highlight = highlightedSquares.find(sq => sq.x === x && sq.y === y);
+      if (highlight) {
+        cell.style.backgroundColor = highlight.color;
+        cell.style.opacity = '0.7';
+      }
+      
       // En passant not used in chess mode (uses normal shogi rules)
       
       const piece = board[y][x];
       if (piece) {
+        // Fog of war: only show visible pieces
+        const isVisible = !fogOfWar || currentPlayer !== "player" || visibleSquares.has(`${x},${y}`);
+        
         const pieceEl = document.createElement("div");
-        let className = "piece " + piece.owner;
         
-        // Add special classes for bomb and toxic pieces
-        if (piece.type === "BOMB") {
-          className += " bomb";
-        } else if (piece.type === "TOXIC") {
-          className += " toxic";
+        if (isVisible) {
+          let className = "piece " + piece.owner;
+          
+          // Add special classes for bomb and toxic pieces
+          if (piece.type === "BOMB") {
+            className += " bomb";
+          } else if (piece.type === "TOXIC") {
+            className += " toxic";
+          }
+          
+          // Add promoted class for promoted pieces
+          if (isPromoted(piece.type)) {
+            className += " promoted";
+          }
+          
+          pieceEl.className = className;
+          pieceEl.textContent = piece.char;
+        } else {
+          // Show hidden piece indicator
+          pieceEl.className = "piece hidden";
+          pieceEl.textContent = "?";
         }
-        
-        pieceEl.className = className;
-        pieceEl.textContent = piece.char;
         
         // Show turns left for special pieces
         if (piece.turnsLeft !== undefined) {
@@ -259,9 +504,180 @@ function renderBoard() {
       }
       
       cell.onclick = onCellClick;
+      
+      // Right-click for annotations
+      cell.oncontextmenu = function(e) {
+        e.preventDefault();
+        const x = parseInt(this.dataset.x);
+        const y = parseInt(this.dataset.y);
+        handleRightClick(x, y, e);
+        return false;
+      };
+      
+      cell.onmousedown = function(e) {
+        if (e.button === 2) { // Right mouse button
+          const x = parseInt(this.dataset.x);
+          const y = parseInt(this.dataset.y);
+          startArrow(x, y);
+        }
+      };
+      
+      cell.onmouseup = function(e) {
+        if (e.button === 2 && isDrawingArrow) { // Right mouse button
+          const x = parseInt(this.dataset.x);
+          const y = parseInt(this.dataset.y);
+          endArrow(x, y);
+        }
+      };
+      
       boardEl.appendChild(cell);
     }
   }
+  
+  // Render arrows
+  renderArrows();
+}
+
+function renderArrows() {
+  // Remove existing arrows
+  const existingArrows = boardEl.querySelectorAll('.arrow');
+  existingArrows.forEach(arrow => arrow.remove());
+  
+  // Add new arrows
+  arrows.forEach(arrow => {
+    const arrowEl = document.createElement('div');
+    arrowEl.className = 'arrow';
+    
+    const fromCell = boardEl.children[arrow.from.y * 9 + arrow.from.x];
+    const toCell = boardEl.children[arrow.to.y * 9 + arrow.to.x];
+    
+    const fromRect = fromCell.getBoundingClientRect();
+    const toRect = toCell.getBoundingClientRect();
+    const boardRect = boardEl.getBoundingClientRect();
+    
+    const fromX = fromRect.left + fromRect.width / 2 - boardRect.left;
+    const fromY = fromRect.top + fromRect.height / 2 - boardRect.top;
+    const toX = toRect.left + toRect.width / 2 - boardRect.left;
+    const toY = toRect.top + toRect.height / 2 - boardRect.top;
+    
+    const angle = Math.atan2(toY - fromY, toX - fromX);
+    const length = Math.sqrt((toX - fromX) ** 2 + (toY - fromY) ** 2);
+    
+    arrowEl.style.position = 'absolute';
+    arrowEl.style.left = fromX + 'px';
+    arrowEl.style.top = fromY + 'px';
+    arrowEl.style.width = length + 'px';
+    arrowEl.style.height = '3px';
+    arrowEl.style.backgroundColor = arrow.color;
+    arrowEl.style.transformOrigin = '0 50%';
+    arrowEl.style.transform = `rotate(${angle}rad)`;
+    arrowEl.style.pointerEvents = 'none';
+    arrowEl.style.zIndex = '10';
+    
+    // Add arrowhead
+    const arrowHead = document.createElement('div');
+    arrowHead.style.position = 'absolute';
+    arrowHead.style.right = '-6px';
+    arrowHead.style.top = '-3px';
+    arrowHead.style.width = '0';
+    arrowHead.style.height = '0';
+    arrowHead.style.borderLeft = '6px solid ' + arrow.color;
+    arrowHead.style.borderTop = '3px solid transparent';
+    arrowHead.style.borderBottom = '3px solid transparent';
+    arrowEl.appendChild(arrowHead);
+    
+    boardEl.appendChild(arrowEl);
+  });
+}
+
+function renderPrisonBoard() {
+  const prisonBoardEl = document.getElementById('prison-board');
+  prisonBoardEl.innerHTML = "";
+  
+  for (let y = 0; y < 9; y++) {
+    for (let x = 0; x < 9; x++) {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      cell.dataset.x = x;
+      cell.dataset.y = y;
+      cell.style.width = "40px";
+      cell.style.height = "40px";
+      cell.style.fontSize = "20px";
+      
+      if (selected && selected.x === x && selected.y === y && !selected.drop) {
+        cell.classList.add("highlight");
+      }
+      
+      const piece = prisonBoard[y][x];
+      if (piece) {
+        const pieceEl = document.createElement("div");
+        let className = "piece " + piece.owner;
+        pieceEl.className = className;
+        pieceEl.textContent = piece.char;
+        pieceEl.style.width = "32px";
+        pieceEl.style.height = "32px";
+        pieceEl.style.fontSize = "16px";
+        cell.appendChild(pieceEl);
+      }
+      
+      cell.onclick = onPrisonCellClick;
+      prisonBoardEl.appendChild(cell);
+    }
+  }
+}
+
+function onPrisonCellClick() {
+  const x = parseInt(this.dataset.x);
+  const y = parseInt(this.dataset.y);
+  
+  if (selected) {
+    if (selected.x === x && selected.y === y) {
+      // Deselect
+      selected = null;
+    } else if (selected.drop) {
+      // Can't drop in prison board
+      return;
+    } else {
+      // Try to move piece in prison
+      const piece = prisonBoard[selected.y][selected.x];
+      if (piece && piece.owner === currentPlayer) {
+        // Simple move in prison (for escape fights)
+        if (prisonBoard[y][x] === null) {
+          prisonBoard[y][x] = prisonBoard[selected.y][selected.x];
+          prisonBoard[selected.y][selected.x] = null;
+          selected = null;
+        } else if (prisonBoard[y][x].owner !== currentPlayer) {
+          // Capture in prison - capturing piece goes to owner's hand, captured piece stays
+          const capturingPiece = prisonBoard[selected.y][selected.x];
+          const capturedPiece = prisonBoard[y][x];
+          
+          // Remove capturing piece from prison board
+          prisonBoard[selected.y][selected.x] = null;
+          
+          // Capturing piece goes to its owner's hand
+          if (currentPlayer === "player") {
+            playerCaptured.push(capturingPiece.type);
+          } else {
+            botCaptured.push(capturingPiece.type);
+          }
+          
+          // Captured piece stays in prison (no change to prisonBoard[y][x])
+          
+          selected = null;
+          switchPlayer();
+        }
+      }
+    }
+  } else {
+    // Select piece
+    const piece = prisonBoard[y][x];
+    if (piece && piece.owner === currentPlayer) {
+      selected = { x, y };
+    }
+  }
+  
+  renderPrisonBoard();
+  renderCaptured();
 }
 
 function renderCaptured() {
@@ -273,6 +689,9 @@ function renderCaptured() {
   });
   
   Object.entries(playerCounts).forEach(([type, count]) => {
+    // Don't show special pieces (BOMB, TOXIC) as droppable
+    if (type === "BOMB" || type === "TOXIC") return;
+    
     const dropZone = document.createElement("div");
     dropZone.className = "drop-zone";
     if (selected && selected.drop && selected.type === type) {
@@ -297,6 +716,9 @@ function renderCaptured() {
   });
   
   Object.entries(botCounts).forEach(([type, count]) => {
+    // Don't show special pieces (BOMB, TOXIC) as droppable
+    if (type === "BOMB" || type === "TOXIC") return;
+    
     const dropZone = document.createElement("div");
     dropZone.className = "drop-zone";
     if (gameMode === "friend" && currentPlayer === "bot" && selected && selected.drop && selected.type === type) {
@@ -326,6 +748,17 @@ function renderCaptured() {
 function updateGameInfo() {
   if (gameVariant === "duck" && pendingDuckMove) {
     turnInfoEl.textContent = "Move the duck!";
+    turnInfoEl.className = "turn-indicator";
+  } else if (gameVariant === "4player") {
+    if (currentPlayer === "player") {
+      turnInfoEl.textContent = "Player 1's turn";
+    } else if (currentPlayer === "player2") {
+      turnInfoEl.textContent = "Player 2's turn";
+    } else if (currentPlayer === "player3") {
+      turnInfoEl.textContent = "Player 3's turn";
+    } else {
+      turnInfoEl.textContent = "Player 4's turn";
+    }
     turnInfoEl.className = "turn-indicator";
   } else if (gameMode === "friend") {
     if (currentPlayer === "player") {
@@ -363,6 +796,11 @@ function updateGameInfo() {
 function demote(type) {
   const map = { TO: "FU", NY: "KY", NK: "KE", NG: "GI", UM: "KA", RY: "HI" };
   return map[type] || type;
+}
+
+function isPromoted(type) {
+  const promotedPieces = ["TO", "NY", "NK", "NG", "UM", "RY"];
+  return promotedPieces.includes(type);
 }
 
 function isInCheck(owner, b = board) {
@@ -717,23 +1155,47 @@ function getAllLegalMoves(owner, b = board) {
     }
   }
   
-  // Drop moves
-  const capturedPieces = owner === "player" ? playerCaptured : botCaptured;
-  const uniquePieces = [...new Set(capturedPieces)];
-  
-  uniquePieces.forEach(pieceType => {
-    for (let y = 0; y < 9; y++) {
-      for (let x = 0; x < 9; x++) {
-        if (isValidDrop(pieceType, { x, y }, owner, b)) {
-          const clone = cloneBoard(b);
-          clone[y][x] = { type: pieceType, char: kanji[pieceType], owner };
-          if (!isInCheck(owner, clone)) {
-            moves.push({ from: { drop: true, type: pieceType }, to: { x, y }, type: "drop" });
+  // Drop moves (only if variant allows drops)
+  if (gameVariant !== "nodrop" && gameVariant !== "chess") {
+    let capturedPieces, prisonPieces = [];
+    
+    if (gameVariant === "prison") {
+      // In prison variant, can drop from hand and prison
+      capturedPieces = owner === "player" ? playerCaptured : 
+                      owner === "bot" ? botCaptured :
+                      owner === "player3" ? player3Captured : player4Captured;
+      prisonPieces = owner === "player" ? playerPrison : 
+                    owner === "bot" ? botPrison :
+                    owner === "player3" ? player3Prison : player4Prison;
+    } else {
+      capturedPieces = owner === "player" ? playerCaptured : botCaptured;
+    }
+    
+    const allPieces = [...capturedPieces, ...prisonPieces];
+    const uniquePieces = [...new Set(allPieces)];
+    
+    uniquePieces.forEach(pieceType => {
+      // Don't allow dropping special pieces
+      if (pieceType === "BOMB" || pieceType === "TOXIC") return;
+      
+      for (let y = 0; y < 9; y++) {
+        for (let x = 0; x < 9; x++) {
+          if (isValidDrop(pieceType, { x, y }, owner, b)) {
+            const clone = cloneBoard(b);
+            clone[y][x] = { type: pieceType, char: kanji[pieceType], owner };
+            if (!isInCheck(owner, clone)) {
+              const isPrisonPiece = prisonPieces.includes(pieceType);
+              moves.push({ 
+                from: { drop: true, type: pieceType, fromPrison: isPrisonPiece }, 
+                to: { x, y }, 
+                type: "drop" 
+              });
+            }
           }
         }
       }
-    }
-  });
+    });
+  }
   
   return moves;
 }
@@ -762,6 +1224,12 @@ function recordMove(move) {
 
 function onCellClick(e) {
   if (gameEnded) return;
+  
+  // Clear annotations on any left click
+  if (arrows.length > 0 || highlightedSquares.length > 0) {
+    clearAnnotations();
+    return;
+  }
   
   // In friend mode, allow both players to play
   // In bot mode, only allow player moves
@@ -852,13 +1320,13 @@ function onCellClick(e) {
         let target = board[y][x];
         
         if (target && target.owner !== currentPlayer && target.type !== "DUCK") {
-          handleCapture(target, currentPlayer);
+          handleCapture(target, currentPlayer, x, y);
         }
         
         let moved = board[selected.y][selected.x];
         
         if (gameVariant === "chess") {
-          // Chess mode: only pawns can promote, only on last rank
+          // Chess mode: only pawns can promote, only on last rank (0 or 8)
           if (moved.type === "FU" && (y === 0 || y === 8)) {
             moved = promoteChessPawn(moved);
           }
@@ -869,7 +1337,7 @@ function onCellClick(e) {
             if (confirm("Promote to bomb?")) moved = promoteToKamikaze(moved);
           }
         } else if (gameVariant === "toxic") {
-          // Toxic promotion is forced when possible
+          // Toxic promotion is forced when possible (for both sides)
           if (mustPromote(moved, selected.y, y) || canPromote(moved, selected.y, y)) {
             moved = promoteToToxic(moved);
           }
@@ -883,6 +1351,16 @@ function onCellClick(e) {
         
         board[y][x] = moved;
         board[selected.y][selected.x] = null;
+        
+        // Set en passant target for chess mode
+        if (gameVariant === "chess" && moved.type === "FU" && Math.abs(selected.y - y) === 2) {
+          enPassantTarget = {
+            x: x,
+            y: currentPlayer === "player" ? y + 1 : y - 1
+          };
+        } else {
+          enPassantTarget = null;
+        }
         
         recordMove({ from: selected, to: { x, y } });
         
@@ -932,21 +1410,55 @@ function onCellClick(e) {
 }
 
 function switchPlayer() {
-  currentPlayer = currentPlayer === "player" ? "bot" : "player";
+  if (gameVariant === "4player") {
+    // 4-player rotation: player -> player2 -> player3 -> player4 -> player
+    if (currentPlayer === "player") {
+      currentPlayer = "player2";
+    } else if (currentPlayer === "player2") {
+      currentPlayer = "player3";
+    } else if (currentPlayer === "player3") {
+      currentPlayer = "player4";
+    } else {
+      currentPlayer = "player";
+    }
+  } else {
+    currentPlayer = currentPlayer === "player" ? "bot" : "player";
+  }
 }
 
-function handleCapture(capturedPiece, capturingPlayer) {
-  // Special pieces (BOMB, TOXIC) can't be captured to hand - they're destroyed
-  if (capturedPiece.type === "BOMB" || capturedPiece.type === "TOXIC") {
-    return; // Just destroy the piece, don't add to hand
+function handleCapture(capturedPiece, capturingPlayer, captureX = null, captureY = null) {
+  // Special pieces handling
+  if (capturedPiece.type === "BOMB") {
+    return; // Bombs are destroyed, don't add to hand
+  }
+  
+  let demotedType = demote(capturedPiece.originalType || capturedPiece.type);
+  
+  // Toxic pieces infect the capturer's hand
+  if (capturedPiece.type === "TOXIC") {
+    demotedType = "TOXIC";
   }
   
   if (gameVariant === "chess" || gameVariant === "nodrop") {
     // Pieces are just removed from the board
     return;
+  } else if (gameVariant === "prison") {
+    // Prison variant: captured piece goes to capturer's prison
+    if (capturingPlayer === "player") {
+      playerPrison.push(demotedType);
+      addToPrisonBoard(demotedType, capturedPiece.owner, captureX, captureY);
+    } else if (capturingPlayer === "bot") {
+      botPrison.push(demotedType);
+      addToPrisonBoard(demotedType, capturedPiece.owner, captureX, captureY);
+    } else if (capturingPlayer === "player3") {
+      player3Prison.push(demotedType);
+      addToPrisonBoard(demotedType, capturedPiece.owner, captureX, captureY);
+    } else if (capturingPlayer === "player4") {
+      player4Prison.push(demotedType);
+      addToPrisonBoard(demotedType, capturedPiece.owner, captureX, captureY);
+    }
   } else if (gameVariant === "return") {
     // Return variant: captured piece goes to opponent's hand
-    const demotedType = demote(capturedPiece.originalType || capturedPiece.type);
     if (capturingPlayer === "player") {
       botCaptured.push(demotedType);
     } else {
@@ -954,7 +1466,6 @@ function handleCapture(capturedPiece, capturingPlayer) {
     }
   } else {
     // Standard shogi: captured piece goes to capturer's hand
-    const demotedType = demote(capturedPiece.originalType || capturedPiece.type);
     if (capturingPlayer === "player") {
       playerCaptured.push(demotedType);
     } else {
@@ -1002,7 +1513,7 @@ function promoteToKamikaze(piece) {
   return { 
     ...promotedPiece, 
     type: "BOMB", 
-    char: kanji["BOMB"], 
+    char: promotedPiece.char + kanji["BOMB"], // Show promoted piece + bomb symbol
     turnsLeft: 5,
     originalType: piece.type, // Keep original type for demotion
     promotedType: promotedPiece.type // Keep promoted type for movement
@@ -1031,7 +1542,7 @@ function promoteToToxic(piece) {
   return { 
     ...promotedPiece, 
     type: "TOXIC", 
-    char: kanji["TOXIC"], 
+    char: promotedPiece.char + kanji["TOXIC"], // Show promoted piece + toxic symbol
     turnsLeft: 5,
     originalType: piece.type, // Keep original type for demotion
     promotedType: promotedPiece.type // Keep promoted type for movement
@@ -1373,7 +1884,12 @@ function getBestMoveWithMinimax(moves, depth, level) {
   return bestMoves[Math.floor(Math.random() * bestMoves.length)];
 }
 
-function minimax(board, depth, isMaximizing, alpha, beta, level) {
+function minimax(board, depth, isMaximizing, alpha, beta, level, startTime = null, timeLimit = null) {
+  // Time limit check
+  if (startTime && timeLimit && Date.now() - startTime > timeLimit) {
+    return evaluatePosition(board, level);
+  }
+  
   if (depth === 0) {
     return evaluatePosition(board, level);
   }
@@ -1393,7 +1909,7 @@ function minimax(board, depth, isMaximizing, alpha, beta, level) {
     for (const move of moves) {
       const clone = cloneBoard(board);
       executeMoveonBoard(move, "bot", clone);
-      const eval = minimax(clone, depth - 1, false, alpha, beta, level);
+      const eval = minimax(clone, depth - 1, false, alpha, beta, level, startTime, timeLimit);
       maxEval = Math.max(maxEval, eval);
       alpha = Math.max(alpha, eval);
       if (beta <= alpha) break; // Alpha-beta pruning
@@ -1404,7 +1920,7 @@ function minimax(board, depth, isMaximizing, alpha, beta, level) {
     for (const move of moves) {
       const clone = cloneBoard(board);
       executeMoveonBoard(move, "player", clone);
-      const eval = minimax(clone, depth - 1, true, alpha, beta, level);
+      const eval = minimax(clone, depth - 1, true, alpha, beta, level, startTime, timeLimit);
       minEval = Math.min(minEval, eval);
       beta = Math.min(beta, eval);
       if (beta <= alpha) break; // Alpha-beta pruning
@@ -1622,26 +2138,70 @@ function executeMove(move, owner) {
       owner 
     };
     
-    if (owner === "bot") {
-      botCaptured.splice(botCaptured.indexOf(move.from.type), 1);
+    // Remove piece from appropriate collection
+    if (move.from.fromPrison) {
+      // Remove from prison
+      if (owner === "player") {
+        playerPrison.splice(playerPrison.indexOf(move.from.type), 1);
+      } else if (owner === "bot") {
+        botPrison.splice(botPrison.indexOf(move.from.type), 1);
+      } else if (owner === "player3") {
+        player3Prison.splice(player3Prison.indexOf(move.from.type), 1);
+      } else if (owner === "player4") {
+        player4Prison.splice(player4Prison.indexOf(move.from.type), 1);
+      }
+    } else {
+      // Remove from captured pieces
+      if (owner === "player") {
+        playerCaptured.splice(playerCaptured.indexOf(move.from.type), 1);
+      } else if (owner === "bot") {
+        botCaptured.splice(botCaptured.indexOf(move.from.type), 1);
+      } else if (owner === "player3") {
+        player3Captured.splice(player3Captured.indexOf(move.from.type), 1);
+      } else if (owner === "player4") {
+        player4Captured.splice(player4Captured.indexOf(move.from.type), 1);
+      }
     }
   } else {
     let piece = board[move.from.y][move.from.x];
     let target = board[move.to.y][move.to.x];
     
     if (target && target.owner !== owner) {
-      if (owner === "bot") {
-        botCaptured.push(demote(target.type));
-      } else {
-        playerCaptured.push(demote(target.type));
-      }
+      handleCapture(target, owner);
     }
     
-    if (mustPromote(piece, move.from.y, move.to.y)) {
-      piece = promote(piece);
-    } else if (canPromote(piece, move.from.y, move.to.y)) {
-      if (owner === "bot" && Math.random() < 0.8) {
+    if (gameVariant === "toxic") {
+      // Toxic promotion is forced for both sides
+      if (mustPromote(piece, move.from.y, move.to.y) || canPromote(piece, move.from.y, move.to.y)) {
+        piece = promoteToToxic(piece);
+      }
+    } else if (gameVariant === "kamikaze") {
+      if (mustPromote(piece, move.from.y, move.to.y)) {
+        piece = promoteToKamikaze(piece);
+      } else if (canPromote(piece, move.from.y, move.to.y)) {
+        if (owner === "bot" && Math.random() < 0.8) {
+          piece = promoteToKamikaze(piece);
+        }
+      }
+    } else if (gameVariant === "chess") {
+      // Chess mode: only pawns can promote, only on last rank
+      if (piece.type === "FU" && (move.to.y === 0 || move.to.y === 8)) {
+        if (owner === "bot") {
+          // Bot chooses randomly between the 3 options
+          const choices = ["HI", "KA", "KE"];
+          const choice = choices[Math.floor(Math.random() * choices.length)];
+          piece = { ...piece, type: choice, char: kanji[choice] };
+        } else {
+          piece = promoteChessPawn(piece);
+        }
+      }
+    } else {
+      if (mustPromote(piece, move.from.y, move.to.y)) {
         piece = promote(piece);
+      } else if (canPromote(piece, move.from.y, move.to.y)) {
+        if (owner === "bot" && Math.random() < 0.8) {
+          piece = promote(piece);
+        }
       }
     }
     
@@ -1763,6 +2323,168 @@ function offerDraw() {
 resignBtn.addEventListener('click', resign);
 drawBtn.addEventListener('click', offerDraw);
 newGameBtn.addEventListener('click', resetGame);
+
+// Right-click annotation functions
+function handleRightClick(x, y, e) {
+  // Toggle square highlight
+  const existingIndex = highlightedSquares.findIndex(sq => sq.x === x && sq.y === y);
+  
+  if (existingIndex !== -1) {
+    // Remove existing highlight
+    highlightedSquares.splice(existingIndex, 1);
+  } else {
+    // Add new highlight (red like chess.com)
+    const color = '#ff6b6b';
+    highlightedSquares.push({ x, y, color });
+  }
+  
+  renderBoard();
+}
+
+function startArrow(x, y) {
+  isDrawingArrow = true;
+  arrowStart = { x, y };
+}
+
+function endArrow(x, y) {
+  if (isDrawingArrow && arrowStart) {
+    if (arrowStart.x !== x || arrowStart.y !== y) {
+      // Check if arrow already exists
+      const existingIndex = arrows.findIndex(arrow => 
+        arrow.from.x === arrowStart.x && arrow.from.y === arrowStart.y &&
+        arrow.to.x === x && arrow.to.y === y
+      );
+      
+      if (existingIndex !== -1) {
+        // Remove existing arrow
+        arrows.splice(existingIndex, 1);
+      } else {
+        // Add new arrow (red like chess.com)
+        const color = '#ff6b6b';
+        arrows.push({ from: arrowStart, to: { x, y }, color });
+      }
+      
+      renderBoard();
+    }
+  }
+  
+  isDrawingArrow = false;
+  arrowStart = null;
+}
+
+function clearAnnotations() {
+  arrows = [];
+  highlightedSquares = [];
+  renderBoard();
+}
+
+function addToPrisonBoard(pieceType, originalOwner, captureX, captureY) {
+  // Try to place at the same position as captured
+  if (prisonBoard[captureY][captureX] === null) {
+    prisonBoard[captureY][captureX] = {
+      type: pieceType,
+      char: kanji[pieceType],
+      owner: originalOwner
+    };
+  } else {
+    // If position is taken, find a random empty spot
+    const emptySpots = [];
+    for (let y = 0; y < 9; y++) {
+      for (let x = 0; x < 9; x++) {
+        if (prisonBoard[y][x] === null) {
+          emptySpots.push({x, y});
+        }
+      }
+    }
+    
+    if (emptySpots.length > 0) {
+      const randomSpot = emptySpots[Math.floor(Math.random() * emptySpots.length)];
+      prisonBoard[randomSpot.y][randomSpot.x] = {
+        type: pieceType,
+        char: kanji[pieceType],
+        owner: originalOwner
+      };
+    }
+  }
+}
+
+function switchBoard() {
+  if (gameVariant !== "prison") return;
+  
+  prisonMode = !prisonMode;
+  selected = null; // Clear selection when switching
+  
+  if (prisonMode) {
+    switchBoardBtn.textContent = "Switch to Main";
+    turnInfoEl.textContent = "Prison Fight Mode - Capture to escape!";
+  } else {
+    switchBoardBtn.textContent = "Switch to Prison";
+    updateGameInfo();
+  }
+  
+  renderBoard();
+}
+
+function calculateVisibleSquares(owner) {
+  visibleSquares.clear();
+  
+  for (let y = 0; y < 9; y++) {
+    for (let x = 0; x < 9; x++) {
+      const piece = board[y][x];
+      if (piece && piece.owner === owner) {
+        // Add piece's own square
+        visibleSquares.add(`${x},${y}`);
+        
+        // Add squares the piece can see/attack
+        const moves = getValidMovesForPiece({x, y});
+        moves.forEach(move => {
+          visibleSquares.add(`${move.x},${move.y}`);
+        });
+        
+        // Add adjacent squares for all pieces
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx >= 0 && nx < 9 && ny >= 0 && ny < 9) {
+              visibleSquares.add(`${nx},${ny}`);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Fullscreen functionality
+function toggleFullscreen() {
+  const gameContainer = document.getElementById('game-container');
+  
+  if (gameContainer.classList.contains('fullscreen')) {
+    // Exit fullscreen
+    gameContainer.classList.remove('fullscreen');
+    fullscreenBtn.textContent = 'Fullscreen';
+    document.body.style.overflow = 'auto';
+  } else {
+    // Enter fullscreen
+    gameContainer.classList.add('fullscreen');
+    fullscreenBtn.textContent = 'Exit Fullscreen';
+    document.body.style.overflow = 'hidden';
+  }
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+  // Clear annotations with Escape key
+  if (e.key === 'Escape') {
+    clearAnnotations();
+  }
+  // Switch boards with Tab key (in prison mode)
+  if (e.key === 'Tab' && gameVariant === "prison") {
+    e.preventDefault();
+    switchBoard();
+  }
+});
 
 // Initialize the game
 initBotLevels();
